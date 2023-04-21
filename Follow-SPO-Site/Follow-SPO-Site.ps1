@@ -1,40 +1,49 @@
 # PowerShell Script for Following a Site via GraphAPI in SharePoint Online 
 # Copyright (c) 2023 - Manuel Frick - https://www.m365fox.com/
-# Sources used: https://charleslakes.com/2021/11/15/graph-api-follow-sharepoint-sites/
 
 # Install the MSAL.PS module if not already installed
 if (-not (Get-Module -ListAvailable -Name MSAL.PS)) {
     Install-Module MSAL.PS -Scope CurrentUser
 }
 
-# Application and tenant information
-$AppId = "<Your-Application-ID>"
-$TenantId = "<Your-Tenant-ID>"
-$ClientSecret = "<Your-Client-Secret>"
+# Import the required MSAL.PS module
+Import-Module MSAL.PS
 
-# Authenticate and get an access token
-$AppCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppId, (ConvertTo-SecureString -String $ClientSecret -AsPlainText -Force)
-$AccessToken = (Get-MsalToken -ClientId $AppId -TenantId $TenantId -ClientCredential $AppCredential -Scopes "https://graph.microsoft.com/.default").AccessToken
+# Set your tenant and application information
+$tenantId = "<Your-Tenant-ID>"
+$appId = "<Your-Application-ID>"
+$AppSecret = "<Your-Client-Secret>"
+$Scopes = "https://graph.microsoft.com/.default"
 
-# Function to make API requests
+# Convert plain text secret to a SecureString
+$SecureAppSecret = ConvertTo-SecureString -String $AppSecret -AsPlainText -Force
+
+# Get the access token
+$AccessToken = (Get-MsalToken -ClientId $AppId -TenantId $TenantId -ClientSecret $SecureAppSecret -Scopes $Scopes).AccessToken
+
 function Get-APIResponse {
     param(
         [Parameter(Mandatory)] [System.String] $APIGetRequest
     )
-    
+
     $apiUrl = "https://graph.microsoft.com/v1.0$APIGetRequest"
     $headers = @{
         'Authorization' = "Bearer $AccessToken"
+        'Content-Type' = "application/json"
     }
+    Write-Host "Request URL: $apiUrl" # Add this line for debugging
 
     try {
-        $response = Invoke-RestMethod -Uri $apiUrl -Method Get -Headers $headers
+        $response = Invoke-RestMethod -Method Get -Uri $apiUrl -Headers $headers
+        Write-Host "Response: $($response | ConvertTo-Json)" # Add this line for debugging
     }
-    catch [Exception] {
-        throw $_
+    catch {
+        throw $_.Exception
     }
     return $response
 }
+
+
 
 # Function to make API batch requests
 function Get-APIBatchResponse {
@@ -42,15 +51,17 @@ function Get-APIBatchResponse {
         [Parameter(Mandatory)] [System.Array] $BatchRequests
     )
     
-    $apiUrl = "https://graph.microsoft.com/v1.0/$batch"
+    $batch = $batchRequests.URL
+    $body = $BatchRequests.body
+    $apiUrl = "https://graph.microsoft.com/v1.0$batch"
     $headers = @{
         'Authorization' = "Bearer $AccessToken"
         'Content-Type' = "application/json"
     }
 
-    $body = @{
-        "requests" = $BatchRequests
-    }
+    #$body = @{
+    #    "requests" = $BatchRequests
+    #}
 
     try {
         $response = Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body (ConvertTo-Json -InputObject $body -Depth 10)
@@ -61,51 +72,67 @@ function Get-APIBatchResponse {
     return $response
 }
 
-# Define function to retrieve the site GUID
+
+
+# Snippet Source: https://charleslakes.com/2021/11/15/graph-api-follow-sharepoint-sites/
+# Change the URL for your Microsoft Tenant and replace "contoso"
+
 function Get-SPOSiteGuid {
     param(
         [Parameter(Mandatory)] [System.String] $RelativePath
     )
- 
+
     [System.String] $thisGuid = ""
     [System.String] $thisReqs = "/sites/contoso.sharepoint.com:$($RelativePath)"
-  
+
     try {
         (Get-APIResponse -APIGetRequest "$thisReqs") | % {
             $thisGuid = "$($_.id)"
         }
+        if ([string]::IsNullOrEmpty($thisGuid)) {
+            throw "Error: Site not found or an issue with the Graph API call."
+        }
     }
-    catch [Exception] {}
+    catch {
+        Write-Host $_.Exception.Message
+    }
     return $thisGuid
 }
 
-# Define function to retrieve the AD Group ID
+
 function Get-ADGroupId {
     param(
         [Parameter(Mandatory)] [System.String] $GroupName
     )
- 
+
     [System.String] $thisGuid = ""
-    [System.String] $thisReqs = "/groups?`$select=id,displayName&`$filter=startswith(displayName, '$GroupName')"
-  
+    [System.String] $thisReqs = "/groups?`$select=id,displayName&`$filter=displayName eq '$GroupName'"
+
     try {
-        (Get-APIResponse -APIGetRequest "$thisReqs").value | % {
-            $thisGuid = "$($_.id)"
+        $response = (Get-APIResponse -APIGetRequest "$thisReqs").value
+        if ($response.Count -eq 1) {
+            $thisGuid = $response[0].id
+        } elseif ($response.Count -gt 1) {
+            throw "Error: Multiple groups found with the same name. Please ensure the group name is unique."
+        } else {
+            throw "Error: Group not found."
         }
     }
-    catch [Exception] {}
+    catch {
+        Write-Host $_.Exception.Message
+    }
     return $thisGuid
 }
 
-# Define function to retrieve the AD Group Members
+
 function Get-ADGroupMembers {
     param(
-        [Parameter(Mandatory)] [System.String] $GroupGUID
+        [Parameter(Mandatory)] [System.String] $GroupID
     )
- 
+
     [System.Collections.Hashtable] $listOf = @{}
-    [System.String] $thisReqs = "/groups/$($GroupGUID)/members?`$select=id,displayName"
-  
+    [System.String] $thisReqs = "/groups/$($GroupID)/members?`$select=id,displayName"
+
     try {
         (Get-APIResponse -APIGetRequest "$thisReqs").value | % {
             $listOf.Add(
@@ -117,26 +144,40 @@ function Get-ADGroupMembers {
     return $listOf
 }
 
-# Get the Site GUID
-[System.String] $sPath = "/sites/Intranet"
-[System.String] $sGuid = (Get-SPOSiteGuid -RelativePath $sPath)
 
-# Get the AD Group ID
-[System.String] $gName = "New Hires"
-[System.String] $gGuid = (Get-ADGroupId -GroupName $gName)
+#Replace the SharePoint Site-URL and the Azure AD Group Name with your values.
 
-# Get the AD Group Members and follow the site
-[System.Array] $batchOf = @()
-foreach($member in ((Get-ADGroupMembers -GroupGUID $gGuid).GetEnumerator())) {
- 
-    $batchOf += @{
+# SharePoint site URL
+[System.String] $sPath = "/sites/intranet"
+
+# Get SharePoint Site ID
+[System.String] $sid = (Get-SPOSiteGuid -RelativePath $sPath)
+
+# Azure AD Group Name
+[System.String] $groupName = "My Group"
+
+# Get Azure AD Group ID
+[System.String] $gId = (Get-ADGroupId -GroupName $groupName)
+
+# Get Azure AD Group Members
+if (-not [string]::IsNullOrEmpty($gId)) {
+    [System.Collections.Hashtable] $groupMembers = (Get-ADGroupMembers -GroupID $gId)
+} else {
+    Write-Host "Error: Group ID is empty."
+    exit
+}
+
+# Prepare batch requests
+[System.Array] $batchRequests = @()
+foreach ($member in $groupMembers.GetEnumerator()) {
+    $batchRequests += @{
         "url" = "/users/$($member.Value)/followedSites/add"
         "method" = "POST"
-        "id" = "$($batchOf.Count + 1)"
+        "id" = "$($batchRequests.Count + 1)"
         "body" = @{
             "value" = @(
                 @{
-                    "id" = "$($sGuid)"
+                    "id" = "$($sId)"
                 }
             )
         }
@@ -146,7 +187,7 @@ foreach($member in ((Get-ADGroupMembers -GroupGUID $gGuid).GetEnumerator())) {
     }
 }
 
-# Execute the batch request
-if ($batchOf.Length -ne 0) {
-    Get-APIBatchResponse -BatchRequests $batchOf
+# Execute batch requests
+if ($batchRequests.Length -ne 0) {
+    Get-APIBatchResponse -BatchRequests $batchRequests
 }
