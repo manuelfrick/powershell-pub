@@ -1,4 +1,4 @@
-# PowerShell Script for Following a Site via GraphAPI in SharePoint Online
+# PowerShell Script for Following a Site via GraphAPI in SharePoint Online 
 # Copyright (c) 2023 - Manuel Frick - https://www.m365fox.com/
 # Sources used: https://charleslakes.com/2021/11/15/graph-api-follow-sharepoint-sites/
 
