@@ -1,2 +1,2 @@
-# powershell-pub
+# PowerShell-Pub 
 PowerShell-Scripts
